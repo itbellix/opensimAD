@@ -43,7 +43,7 @@ pathMain = os.getcwd()
 # Provide path to the directory where you want to save your results.
 pathModelFolder = os.path.join(pathMain, 'examples')
 # Provide path to OpenSim model.
-modelName = 'Hamner_modified'
+modelName = 'simple_pendulum'
 pathOpenSimModel = os.path.join(pathModelFolder, modelName + '.osim')
 # Provide path to the InverseDynamics folder.
 # To verify that what we did is correct, we compare torques returned by the

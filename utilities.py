@@ -27,7 +27,7 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
     nBodies = 0
     for i in range(bodySet.getSize()):        
         c_body = bodySet.get(i)
-        c_body_name = c_body.getName()  
+        c_body_name = c_body.getName()   
         if (c_body_name == 'patella_l' or c_body_name == 'patella_r'):
             continue
         nBodies += 1
@@ -69,6 +69,7 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
         f.write('#include <OpenSim/Simulation/SimbodyEngine/Joint.h>\n')
         f.write('#include <OpenSim/Simulation/SimbodyEngine/SpatialTransform.h>\n')
         f.write('#include <OpenSim/Simulation/SimbodyEngine/CustomJoint.h>\n')
+        # f.write('#include <OpenSim/Simulation/SimbodyEngine/ScapulothoracicJoint.h>\n')     # added by Italo, but returns error at building stage
         f.write('#include <OpenSim/Common/LinearFunction.h>\n')
         f.write('#include <OpenSim/Common/PolynomialFunction.h>\n')
         f.write('#include <OpenSim/Common/MultiplierFunction.h>\n')
@@ -88,14 +89,14 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
         f.write('using namespace SimTK;\n')
         f.write('using namespace OpenSim;\n\n')
     
-        f.write('constexpr int n_in = 2; \n')
-        f.write('constexpr int n_out = 1; \n')
+        f.write('constexpr int n_in = 2; \n')   # number of inputs to Casadi function {x,u} = {states, controls} (controls are intended as accelerations)
+        f.write('constexpr int n_out = 1; \n')  # number of outputs from function {tau} = {state derivatives}  (in Antoine's code this was "tau", we will need x_dot) TODO: change
         
         f.write('constexpr int nCoordinates = %i; \n' % nCoordinates)
-        f.write('constexpr int NX = nCoordinates*2; \n')
-        f.write('constexpr int NU = nCoordinates; \n')
+        f.write('constexpr int NX = nCoordinates*2; \n')               # dimensions of the state (angular position and velocities of each coordinate)
+        f.write('constexpr int NU = nCoordinates; \n')                 # dimensions of control vector (just 1 in our case - DOF we are interested in) TODO: change
         
-        # Residuals (joint torques), 3D GRFs, GRMs, and body origins.
+        # Residuals (joint torques), 3D GRFs, GRMs, and body origins. TODO: ITALO this must be changed
         nOutputs = nCoordinates + 3*(2+2+nBodies)
         f.write('constexpr int NR = %i; \n\n' % (nOutputs))
     
@@ -122,9 +123,16 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
             c_body_mass = c_body.get_mass()
             c_body_mass_center = c_body.get_mass_center().to_numpy()
             c_body_inertia = c_body.get_inertia()
-            c_body_inertia_vec3 = np.array([c_body_inertia.get(0), c_body_inertia.get(1), c_body_inertia.get(2)])        
+            c_body_trans_inertia_vec3 = np.array([c_body_inertia.get(0), c_body_inertia.get(1), c_body_inertia.get(2)])     # translational inertia
+            c_body_rot_inertia_vec3 = np.array([c_body_inertia.get(3), c_body_inertia.get(4), c_body_inertia.get(5)])       # rotational inertia (not accounted for in Antoine's code)
+
             f.write('\tOpenSim::Body* %s;\n' % c_body_name)
-            f.write('\t%s = new OpenSim::Body(\"%s\", %.20f, Vec3(%.20f, %.20f, %.20f), Inertia(%.20f, %.20f, %.20f, 0., 0., 0.));\n' % (c_body_name, c_body_name, c_body_mass, c_body_mass_center[0], c_body_mass_center[1], c_body_mass_center[2], c_body_inertia_vec3[0], c_body_inertia_vec3[1], c_body_inertia_vec3[2]))
+            f.write('\t%s = new OpenSim::Body(\"%s\", %.20f, Vec3(%.20f, %.20f, %.20f), Inertia(%.20f, %.20f, %.20f, %.20f, %.20f, %.20f));\n' 
+                    % (c_body_name, c_body_name, c_body_mass, 
+                       c_body_mass_center[0], c_body_mass_center[1], c_body_mass_center[2], 
+                       c_body_trans_inertia_vec3[0], c_body_trans_inertia_vec3[1], c_body_trans_inertia_vec3[2],
+                       c_body_rot_inertia_vec3[0], c_body_rot_inertia_vec3[1], c_body_rot_inertia_vec3[2]))
+            
             f.write('\tmodel->addBody(%s);\n' % (c_body_name))
             f.write('\n')
         
@@ -212,7 +220,8 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
                                 c_joint.getName(), coord, c_nCoeffs, dofSel_f_coeffs[0], dofSel_f_coeffs[1], dofSel_f_coeffs[2],
                                 dofSel_f_coeffs[3], dofSel_f_coeffs[4], dofSel_f_coeffs[5], dofSel_f_coeffs[6]))
                         else:
-                            raise ValueError("TODO")
+                            raise ValueError("TODO: number of coefficients for the PolynomialFuction in CustomJoint is not supported yet")
+                        
                         f.write('\tVector st_%s_%i_coeffs_vec(%i); \n' % (c_joint.getName(), coord, c_nCoeffs))
                         f.write('\tfor (int i = 0; i < %i; ++i) st_%s_%i_coeffs_vec[i] = st_%s_%i_coeffs[i]; \n' % (
                         c_nCoeffs, c_joint.getName(), coord, c_joint.getName(), coord))
@@ -251,7 +260,8 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
                                     c_joint.getName(), coord, c_nCoeffs, dofSel_f_obj_f_coeffs[0], dofSel_f_obj_f_coeffs[1],
                                     dofSel_f_obj_f_coeffs[2], dofSel_f_obj_f_coeffs[3], dofSel_f_obj_f_coeffs[4]))
                             else:
-                                raise ValueError("TODO")
+                                raise ValueError("TODO: number of coefficients for the MultiplierFuction in CustomJoint is not supported yet")
+                            
                             f.write('\tVector st_%s_%i_coeffs_vec(%i); \n' % (c_joint.getName(), coord, c_nCoeffs))
                             f.write('\tfor (int i = 0; i < %i; ++i) st_%s_%i_coeffs_vec[i] = st_%s_%i_coeffs[i]; \n' % (
                             c_nCoeffs, c_joint.getName(), coord, c_joint.getName(), coord))
@@ -259,7 +269,7 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
                                 '\tst_%s[%i].setFunction(new MultiplierFunction(new PolynomialFunction(st_%s_%i_coeffs_vec), %.20f));\n' % (
                                 c_joint.getName(), coord, c_joint.getName(), coord, dofSel_f_obj_scale))
                         else:
-                            raise ValueError("Not supported")
+                            raise ValueError("Not supported (in CustomJoint)")
                     elif dofSel_f.getConcreteClassName() == 'Constant':
                         dofSel_f_obj = opensim.Constant.safeDownCast(dofSel_f)
                         dofSel_f_obj_value = dofSel_f_obj.getValue()
@@ -432,7 +442,7 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
             f.write('\tVec3 %s_or = %s->getPositionInGround(*state);\n' % (c_body_name, c_body_name))
         f.write('\n')
             
-        # Get GRFs.
+        # Get GRFs. ITALO: these are specific for walking, we can remove them!
         f.write('\t/// Ground reaction forces.\n')
         f.write('\tVec3 GRF_r(0), GRF_l(0);\n')
         count = 0
@@ -449,7 +459,7 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
                 count += 1
         f.write('\n')
             
-        # Get GRMs.
+        # Get GRMs. ITALO: these are specific for walking, we can remove them!
         f.write('\t/// Ground reaction moments.\n')
         f.write('\tVec3 GRM_r(0), GRM_l(0);\n')
         f.write('\tVec3 normal(0, 1, 0);\n\n')
@@ -504,7 +514,7 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
             count += 1
         count_acc = nCoordinates
         
-        # Export GRFs
+        # Export GRFs ITALO: these are specific for walking, we can remove them!
         f.write('\t/// Ground reaction forces.\n')
         f.write('\tfor (int i = 0; i < 3; ++i) res[0][i + %i] = value<T>(GRF_r[i]);\n' % (count_acc))
         f.write('\tfor (int i = 0; i < 3; ++i) res[0][i + %i] = value<T>(GRF_l[i]);\n' % (count_acc+3))
@@ -513,7 +523,7 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
         F_map['GRFs']['left'] = range(count_acc+3, count_acc+6)
         count_acc += 6
         
-        # Export GRMs
+        # Export GRMs ITALO: these are specific for walking, we can remove them!
         f.write('\t/// Ground reaction moments.\n')
         f.write('\tfor (int i = 0; i < 3; ++i) res[0][i + %i] = value<T>(GRM_r[i]);\n' % (count_acc))
         f.write('\tfor (int i = 0; i < 3; ++i) res[0][i + %i] = value<T>(GRM_l[i]);\n' % (count_acc+3))
@@ -543,7 +553,7 @@ def generateExternalFunction(pathOpenSimModel, outputDir, pathID,
         f.write('int main() {\n')
         f.write('\tRecorder x[NX];\n')
         f.write('\tRecorder u[NU];\n')
-        f.write('\tRecorder tau[NR];\n')
+        f.write('\tRecorder tau[NR];\n')    # TODO ITALO: this variable will need to be changed
         f.write('\tfor (int i = 0; i < NX; ++i) x[i] <<= 0;\n')
         f.write('\tfor (int i = 0; i < NU; ++i) u[i] <<= 0;\n')
         f.write('\tconst Recorder* Recorder_arg[n_in] = { x,u };\n')
