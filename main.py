@@ -35,7 +35,7 @@
 '''
 
 import os
-from utilities import generateExternalFunction
+from utilities import generateExternalFunction_ID, generateExternalFunction_Acc
 
 pathMain = os.getcwd()
 
@@ -57,10 +57,12 @@ pathID =  os.path.join(pathMain, 'InverseDynamics')
 # Output file name (default is F).
 outputFilename = modelName
 
-# %% Generate external function.
-generateExternalFunction(pathOpenSimModel, pathModelFolder, pathID,
+# %% Generate external function to access ID tool symbolically
+generateExternalFunction_ID(pathOpenSimModel, pathModelFolder, pathID,
                          outputFilename=outputFilename)
 
+generateExternalFunction_Acc(pathOpenSimModel, pathModelFolder, pathID,
+                         outputFilename=outputFilename)
 # %% Example (not recommended).
 # You can also directly provide a cpp file and use the built-in utilities to
 # build the corresponding dll. Note that with this approach, you will not get
