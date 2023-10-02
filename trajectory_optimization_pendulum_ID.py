@@ -12,11 +12,15 @@
 import opensim as osim
 import casadi as ca
 import numpy as np
+import os
 import time
+import pickle
+
+withviz = False
 
 # Define parameters for optimal control
 T = 3.   # Time horizon
-N = 30  # number of control intervals
+N = 3000  # number of control intervals
 h = T / N
 
 # Degree of interpolating polynomial
@@ -137,21 +141,6 @@ q_ddot_opt = sol.value(Q_ddot)
 q_opt = x_opt[::2]
 q_dot_opt = x_opt[1::2]
 
-# visualize the model evolution for all the instants with the OpenSim visualizer
-model = osim.Model('/home/itbellix/Desktop/GitHub/PTbot_official/OsimModels/simple_pendulum.osim')
-model.setUseVisualizer(True)
-state = model.initSystem()
-coordinateSet = model.getCoordinateSet()
-nCoords = coordinateSet.getSize()
-
-for time_instant in range(N):
-    for coor in range(nCoords):
-        coordinateSet.get(coor).setValue(state, q_opt[time_instant])
-        coordinateSet.get(coor).setSpeedValue(state, q_dot_opt[time_instant])
-
-    model.getVisualizer().show(state)
-    time.sleep(h)
-
 # ---------------------------------------------------------------------------------------------------------------------------#
 #             SECOND STEP: estimate the torques during swing up (using only CasADi at this stage)
 # ---------------------------------------------------------------------------------------------------------------------------#
@@ -160,16 +149,238 @@ x = ca.MX.sym('x', 2)   # state vector: angular position and velocity of the pen
 
 u = ca.MX.sym('u')      # control vector: torque applied at the pendulum
 
-# Model equations
+# Model equations - they are still known explicitly
 mass = 1
 length = 1
 inertia = mass*length**2
 g = 9.81
 
-xdot = ca.vertcat(x[1], u / (inertia) - g/length * ca.sin(x[0]))
+xdot_ID_custom = ca.vertcat(x[1], u / (inertia) - g/length * ca.sin(x[0]))
 
 # Objective term
-L = (x[0] - x_goal[0])**2 + u**2
+# We do not need any objective term, as we will again solve the pendulum swing up by simply
+# imposing the known positions, velocities and accelerations from the previous step. This time
+# we will optimize to find the torques, but we don't care about the cost
+L_ID_custom = 0
 
 # Continuous time dynamics
-f = ca.Function('f', [x, u], [xdot, L])
+f_ID_custom = ca.Function('f', [x, u], [xdot_ID_custom, L_ID_custom])
+
+# Start with an empty NLP
+opti_ID_custom = ca.Opti()
+J_ID_custom = 0
+
+# "Lift" initial conditions
+Xk = opti_ID_custom.variable(2)
+
+# Collect all states/controls and accelerations
+Xs_ID_custom = [Xk]
+Us_ID_custom = []
+Q_ddot_ID_custom = []
+
+# Formulate the NLP
+for k in range(N):
+    # prescribe the value of the state from previous swing-up solution
+    opti_ID_custom.subject_to(Xk == ca.vertcat(q_opt[k], q_dot_opt[k]))
+
+    # New NLP variable for the control
+    Uk = opti_ID_custom.variable()
+    Us_ID_custom.append(Uk)
+
+    # Evaluate ODE right-hand-side at beginning of the interval
+    ode, _ = f_ID_custom(Xk, Uk)
+
+    # prescribe the state derivative to be the same found in previous swing-up solution
+    opti_ID_custom.subject_to(ode[1]==q_ddot_opt[k])
+
+    # save simulated accelerations
+    Q_ddot_ID_custom.append(ode[1])
+
+    # New decision variable for state at the end of the interval
+    Xk = opti_ID_custom.variable(2)
+    Xs_ID_custom.append(Xk)
+
+# prescribe the value of the state from previous swing-up solution, on last interval
+opti_ID_custom.subject_to(Xk == ca.vertcat(q_opt[k], q_dot_opt[k]))
+
+# Evaluate ODE right-hand-side at beginning of the interval
+ode, _ = f(Xk, Uk)
+
+# prescribe the state derivative to be the same found in previous swing-up solution
+# opti_ID_custom.subject_to(ode[1]==q_ddot_opt[k])
+
+# Flatten lists
+Xs_ID_custom = ca.vertcat(*Xs_ID_custom)
+Us_ID_custom = ca.vertcat(*Us_ID_custom)
+Q_ddot_ID_custom = ca.vertcat(*Q_ddot_ID_custom)
+
+opti_ID_custom.minimize(J_ID_custom)
+
+opts = {'ipopt.print_level': 3, 'print_time': 1, 'ipopt.tol': 1e-3}
+opti_ID_custom.solver('ipopt', opts)
+
+start = time.time()
+sol_ID_custom = opti_ID_custom.solve()
+time_analyticODE = time.time()-start
+
+x_opt_ID_custom = sol_ID_custom.value(Xs_ID_custom)
+u_opt_ID_custom = sol_ID_custom.value(Us_ID_custom)
+q_ddot_opt_ID_custom = sol_ID_custom.value(Q_ddot_ID_custom)
+
+# distinguish between angles and velocities
+q_opt_ID_custom = x_opt_ID_custom[::2]
+q_dot_opt_ID_custom = x_opt_ID_custom[1::2]
+
+# ---------------------------------------------------------------------------------------------------------------------------#
+#             THIRD STEP: estimate the torques during swing up (using library provided by OpenSimAD)
+# ---------------------------------------------------------------------------------------------------------------------------#
+# Declare model variables
+x = ca.MX.sym('x', 2)   # state vector: angular position and velocity of the pendulum [rad, rad/s] (x[0] = 0 means the pendulum is at its stable equilibrium point)
+
+u = ca.MX.sym('u')      # control vector: torque applied at the pendulum
+
+# Model equations are unknown here (will use OpenSim fuctions through  CasADi, generated by OpenSimAD)
+F = ca.external('F', os.path.join('/home/itbellix/Desktop/GitHub/opensimAD_fork/examples/simple_pendulum' + '.so'))
+F_map = np.load(os.path.join('/home/itbellix/Desktop/GitHub/opensimAD_fork/examples/simple_pendulum' + '_map.npy'), allow_pickle=True).item() 
+
+# Objective term
+# We do not need any objective term, as we will again solve the pendulum swing up by simply
+# imposing the known positions, velocities and accelerations from the previous step. This time
+# we will optimize to find the torques, but we don't care about the cost
+
+# Start with an empty NLP
+opti_ID_osimAD = ca.Opti()
+J_ID_osimAD = 0
+
+# "Lift" initial conditions
+Xk = opti_ID_osimAD.variable(2)
+
+# Collect all states/controls and accelerations
+Xs_ID_osimAD = [Xk]
+Us_ID_osimAD = []
+Q_ddot_ID_osimAD = []
+
+# Formulate the NLP
+for k in range(N):
+    # prescribe the value of the state from previous swing-up solution
+    opti_ID_osimAD.subject_to(Xk == ca.vertcat(q_opt[k], q_dot_opt[k]))
+
+    # Evaluate system's equations through external function, to find the torque
+    Tk = F(ca.vertcat(Xk, q_ddot_opt[k]))
+    Us_ID_osimAD.append(Tk)
+
+    # New decision variable for state at the end of the interval
+    Xk = opti_ID_osimAD.variable(2)
+    Xs_ID_osimAD.append(Xk)
+
+# prescribe the value of the state from previous swing-up solution, on last interval
+opti_ID_osimAD.subject_to(Xk == ca.vertcat(q_opt[k], q_dot_opt[k]))
+
+# Flatten lists
+Xs_ID_osimAD = ca.vertcat(*Xs_ID_osimAD)
+Us_ID_osimAD = ca.vertcat(*Us_ID_osimAD)
+Q_ddot_ID_osimAD = ca.vertcat(*Q_ddot_ID_osimAD)
+
+opti_ID_osimAD.minimize(J_ID_osimAD)
+
+opts = {'ipopt.print_level': 3, 'print_time': 1, 'ipopt.tol': 1e-5}
+opti_ID_osimAD.solver('ipopt', opts)
+
+start = time.time()
+sol_ID_osimAD = opti_ID_osimAD.solve()
+time_osimAD = time.time()-start
+
+x_opt_ID_osimAD = sol_ID_osimAD.value(Xs_ID_osimAD)
+u_opt_ID_osimAD = sol_ID_osimAD.value(Us_ID_osimAD)
+q_ddot_opt_ID_osimAD = sol_ID_osimAD.value(Q_ddot_ID_osimAD)
+
+# distinguish between angles and velocities
+q_opt_ID_osimAD = x_opt_ID_osimAD[::2]
+q_dot_opt_ID_osimAD = x_opt_ID_osimAD[1::2]
+
+
+# ---------------------------------------------------------------------------------------------------------------------------#
+#             4th STEP: check if the torques returned by the previous step are reasonable
+# ---------------------------------------------------------------------------------------------------------------------------#
+model = osim.Model('/home/itbellix/Desktop/GitHub/opensimAD_fork/examples/simple_pendulum_withCoordActs.osim')
+state = model.initSystem()
+coordinateSet = model.getCoordinateSet()
+nCoords = coordinateSet.getSize()
+
+# set the coordinate in the initial position
+for coord in range(nCoords):
+  model.getCoordinateSet().get(coord).setValue(state, q_opt[0])
+  model.getCoordinateSet().get(coord).setSpeedValue(state, q_dot_opt[0])
+
+# retrieve actuators and prepare them for being overridden
+nActs = model.getActuators().getSize()
+acts = []
+for index_act in range(nActs):
+    acts.append(osim.ScalarActuator.safeDownCast(model.getActuators().get(index_act)))
+    if not(acts[index_act].isActuationOverridden(state)):
+      acts[index_act].overrideActuation(state, True)
+
+
+theta_fd = [q_opt[0]]
+theta_dot_fd = [q_dot_opt[0]]
+theta_ddot_fd = [q_ddot_opt[0]]
+for k in range(N):
+    # command the optimized torque to the model
+    for index_act in range(nActs):
+        acts[index_act].setOverrideActuation(state, u_opt_ID_osimAD[k])
+
+    # instatiate the manager and use it to integrate the system
+    manager = osim.Manager(model, state)
+    state = manager.integrate(h+k*h)
+
+    # retrieve the values of the angles and angular velocities
+    theta_fd.append(model.getCoordinateSet().get(0).getValue(state))
+    theta_dot_fd.append(model.getCoordinateSet().get(0).getSpeedValue(state))
+    theta_ddot_fd.append(model.getCoordinateSet().get(0).getAccelerationValue(state))
+
+delta_fd_vs_opt = theta_fd - q_opt
+delta_fd_vs_IDcustom = theta_fd - q_opt_ID_custom
+delta_fd_vs_IDosimAD = theta_fd - q_opt_ID_osimAD
+
+# Specify the file path where to save the variables
+file_path = 'data.pkl'
+
+data_to_save = {
+    'q_ddot_opt': q_ddot_opt,
+    'q_dot_opt': q_dot_opt,
+    'q_opt': q_opt,
+    'u_opt': u_opt,
+    'q_ddot_opt_ID_custom': q_ddot_opt_ID_custom,
+    'q_dot_opt_ID_custom': q_dot_opt_ID_custom,
+    'q_opt_ID_custom': q_opt_ID_custom,
+    'u_opt_ID_custom': u_opt_ID_custom,
+    'q_ddot_opt_ID_osimAD': q_ddot_opt_ID_osimAD,
+    'q_dot_opt_ID_osimAD': q_dot_opt_ID_osimAD,
+    'q_opt_ID_osimAD': q_opt_ID_osimAD,
+    'u_opt_ID_osimAD': u_opt_ID_osimAD,
+    'theta_fd': theta_fd,
+    'theta_dot_fd': theta_dot_fd,
+    'theta_ddot_fd': theta_ddot_fd,
+    'control_used': "u_opt_ID_osimAD"
+}
+
+# Open the file in binary write mode and serialize the variable
+with open(file_path, 'wb') as file:
+    pickle.dump(data_to_save, file)
+
+
+# if withviz:
+#     # visualize the model evolution for all the instants with the OpenSim visualizer
+#     model = osim.Model('/home/itbellix/Desktop/GitHub/opensimAD_fork/examples/simple_pendulum.osim')
+#     model.setUseVisualizer(True)
+#     state = model.initSystem()
+#     coordinateSet = model.getCoordinateSet()
+#     nCoords = coordinateSet.getSize()
+
+#     for time_instant in range(N):
+#         for coor in range(nCoords):
+#             coordinateSet.get(coor).setValue(state, q_opt[time_instant])
+#             coordinateSet.get(coor).setSpeedValue(state, q_dot_opt[time_instant])
+
+#         model.getVisualizer().getSimbodyVisualizer().report(state)
+#         time.sleep(h)
