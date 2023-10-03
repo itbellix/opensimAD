@@ -1081,7 +1081,7 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
         f.write('\t/// Set appliedMobilityForces (# mobilities). They are the controls of our problem\n')
         f.write('\tVector appliedMobilityForces(nCoordinates);\n')
         f.write('\tappliedMobilityForces.setToZero();\n')
-        # f.write('\tfor (int i = 0; i < nCoordinates; ++i) appliedMobilityForces[i] = ua[i];\n')  # TODO: uncomment once it works
+        f.write('\tfor (int i = 0; i < nCoordinates; ++i) appliedMobilityForces[i] = ua[i];\n')
         f.write('\t/// Set appliedBodyForces (# bodies + ground).\n')
         f.write('\tVector_<SpatialVec> appliedBodyForces;\n')
         f.write('\tint nbodies = model->getBodySet().getSize() + 1;\n')
@@ -1135,7 +1135,7 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
         f.write('\tudot.setToZero();\n')
         f.write('\tmodel->getMatterSubsystem().calcAcceleration(*state,\n')
         f.write('\t\t\tappliedMobilityForces, appliedBodyForces, udot, A_GB);\n\n')
-        
+        f.write('\tstd::cout << "udot after calcAcceleration: " << udot.toString() << std::endl;')
         
         # Save dict pointing to which elements are returned by F and in which
         # order, such as to facilitate using F when formulating problem.
