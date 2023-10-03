@@ -58,8 +58,8 @@ pathID =  os.path.join(pathMain, 'InverseDynamics')
 outputFilename = modelName
 
 # %% Generate external function to access ID tool symbolically
-generateExternalFunction_ID(pathOpenSimModel, pathModelFolder, pathID,
-                         outputFilename=outputFilename)
+# generateExternalFunction_ID(pathOpenSimModel, pathModelFolder, pathID,
+#                          outputFilename=outputFilename)
 
 generateExternalFunction_Acc(pathOpenSimModel, pathModelFolder, pathID,
                          outputFilename=outputFilename)

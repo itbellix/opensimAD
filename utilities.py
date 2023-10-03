@@ -94,9 +94,9 @@ def generateExternalFunction_ID(pathOpenSimModel, outputDir, pathID,
         
         f.write('constexpr int nCoordinates = %i; \n' % nCoordinates)
         f.write('constexpr int NX = nCoordinates*2; \n')               # dimensions of the state (angular position and velocities of each coordinate)
-        f.write('constexpr int NU = nCoordinates; \n')                 # dimensions of control vector (just 1 in our case - DOF we are interested in) TODO: change
+        f.write('constexpr int NU = nCoordinates; \n')                 # dimensions of control vector (angular accelerations of each coordinate)
         
-        # Residuals (joint torques). TODO: ITALO this must be changed
+        # Residuals (joint torques).
         nOutputs = nCoordinates
         f.write('constexpr int NR = %i; \n\n' % (nOutputs))
     
@@ -797,11 +797,9 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
 
         f.write('constexpr int nCoordinates = %i; \n' % nCoordinates)
         f.write('constexpr int NX = nCoordinates*2; \n')               # dimensions of the state (angular position and velocities of each coordinate)
-        f.write('constexpr int NU = nCoordinates; \n')                 # dimensions of control vector (just 1 in our case - DOF we are interested in) TODO: change
+        f.write('constexpr int NU = nCoordinates; \n\n')               # dimensions of control vector (torque applied at each DoF of the model). No muscles are considered
         
-        # Residuals (joint torques). TODO: ITALO this must be changed
-        nOutputs = nCoordinates
-        f.write('constexpr int NR = %i; \n\n' % (nOutputs))
+        # The output will be x_dot, hence it will have dimension NX
     
         f.write('template<typename T> \n')
         f.write('T value(const Recorder& e) { return e; }; \n')
@@ -1077,12 +1075,13 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     
         f.write('\t// Set state variables and realize.\n')
         f.write('\tmodel->setStateVariableValues(*state, QsUs);\n')
-        f.write('\tmodel->realizeVelocity(*state);\n\n')
+        f.write('\tmodel->realizeDynamics(*state);\n\n')
         
         f.write('\t// Compute residual forces.\n')
-        f.write('\t/// Set appliedMobilityForces (# mobilities).\n')
+        f.write('\t/// Set appliedMobilityForces (# mobilities). They are the controls of our problem\n')
         f.write('\tVector appliedMobilityForces(nCoordinates);\n')
         f.write('\tappliedMobilityForces.setToZero();\n')
+        # f.write('\tfor (int i = 0; i < nCoordinates; ++i) appliedMobilityForces[i] = ua[i];\n')  # TODO: uncomment once it works
         f.write('\t/// Set appliedBodyForces (# bodies + ground).\n')
         f.write('\tVector_<SpatialVec> appliedBodyForces;\n')
         f.write('\tint nbodies = model->getBodySet().getSize() + 1;\n')
@@ -1125,25 +1124,17 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
                 count += 1
                 f.write('\n')
                 
-        f.write('\t/// knownUdot.\n')
-        f.write('\tVector knownUdot(nCoordinates);\n')
-        f.write('\tknownUdot.setToZero();\n')
-        f.write('\tfor (int i = 0; i < nCoordinates; ++i) knownUdot[i] = ua[i];\n')
-        f.write('\t/// Calculate residual forces.\n')
-        f.write('\tVector residualMobilityForces(nCoordinates);\n')
-        f.write('\tresidualMobilityForces.setToZero();\n')
-        f.write('\tmodel->getMatterSubsystem().calcResidualForceIgnoringConstraints(*state,\n')
-        f.write('\t\t\tappliedMobilityForces, appliedBodyForces, knownUdot, residualMobilityForces);\n\n')
-        
-        # Get body origins.
-        f.write('\t/// Body origins.\n')
-        for i in range(bodySet.getSize()):        
-            c_body = bodySet.get(i)
-            c_body_name = c_body.getName()            
-            if (c_body_name == 'patella_l' or c_body_name == 'patella_r'):
-                continue            
-            f.write('\tVec3 %s_or = %s->getPositionInGround(*state);\n' % (c_body_name, c_body_name))
-        f.write('\n')
+        #TODO: this is basically done by just using the void SimTK::SimbodyMatterSubsystem::calcAcceleration
+        # https://simtk.org/api_docs/simbody/3.5/classSimTK_1_1SimbodyMatterSubsystem.html#acaa2e2826c3aa20edd38ef295619f219
+        # Only thing to be built here is the appliedMobilityForces, that is basically representing the CoordinateActuator's action
+        f.write('\t/// Calculate induced accelerations.\n')
+        f.write('\tVector_<SpatialVec> A_GB;\n')
+        f.write('\tA_GB.resize(nbodies);\n')
+        f.write('\tA_GB.setToZero();;\n')
+        f.write('\tVector udot(nCoordinates);\n')
+        f.write('\tudot.setToZero();\n')
+        f.write('\tmodel->getMatterSubsystem().calcAcceleration(*state,\n')
+        f.write('\t\t\tappliedMobilityForces, appliedBodyForces, udot, A_GB);\n\n')
         
         
         # Save dict pointing to which elements are returned by F and in which
@@ -1151,17 +1142,17 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
         F_map = {}
         
         f.write('\t/// Outputs.\n')        
-        # Export residuals (joint torques).
-        f.write('\t/// Residual forces (OpenSim and Simbody have different state orders).\n')
-        f.write('\tauto indicesSimbodyInOS = getIndicesSimbodyInOpenSim(*model);\n')
+        # Export induced accelerations.
+        f.write('\t/// Induced accelerations (OpenSim and Simbody have different state orders).\n')
+        f.write('\tauto indicesSimbodyInOS = getIndicesSimbodyInOpenSim(*model);\n')  # TODO: uncomment this once it works
         f.write('\tfor (int i = 0; i < NU; ++i) res[0][i] =\n')
-        f.write('\t\t\tvalue<T>(residualMobilityForces[indicesSimbodyInOS[i]]);\n')
-        F_map['residuals'] = {}
+        f.write('\t\t\tvalue<T>(udot[indicesSimbodyInOS[i]]);\n')
+        F_map['accelerations'] = {}
         count = 0
         for coordinate in coordinates:
             if 'beta' in coordinate:
                 continue
-            F_map['residuals'][coordinate] = count 
+            F_map['accelerations'][coordinate] = count 
             count += 1
         count_acc = nCoordinates
             
@@ -1172,14 +1163,14 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
         f.write('int main() {\n')
         f.write('\tRecorder x[NX];\n')
         f.write('\tRecorder u[NU];\n')
-        f.write('\tRecorder tau[NR];\n')    # TODO ITALO: this variable will need to be changed
+        f.write('\tRecorder x_dot[NU];\n')
         f.write('\tfor (int i = 0; i < NX; ++i) x[i] <<= 0;\n')
         f.write('\tfor (int i = 0; i < NU; ++i) u[i] <<= 0;\n')
         f.write('\tconst Recorder* Recorder_arg[n_in] = { x,u };\n')
-        f.write('\tRecorder* Recorder_res[n_out] = { tau };\n')
+        f.write('\tRecorder* Recorder_res[n_out] = { x_dot };\n')
         f.write('\tF_generic<Recorder>(Recorder_arg, Recorder_res);\n')
-        f.write('\tdouble res[NR];\n')
-        f.write('\tfor (int i = 0; i < NR; ++i) Recorder_res[0][i] >>= res[i];\n')
+        f.write('\tdouble res[NU];\n')
+        f.write('\tfor (int i = 0; i < NU; ++i) Recorder_res[0][i] >>= res[i];\n')
         f.write('\tRecorder::stop_recording();\n')
         f.write('\treturn 0;\n')
         f.write('}\n')
