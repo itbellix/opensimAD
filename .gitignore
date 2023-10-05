@@ -9,3 +9,9 @@ examples/*
 !examples/LaiArnold_modified.osim
 
 opensimAD-install/*
+
+# avoid loading VSCode stuff
+.vscode/*
+
+# added locally to investigate the implementation of the Recorder class
+simbody_recorder_source/*
