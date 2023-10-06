@@ -1135,7 +1135,6 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
         f.write('\tudot.setToZero();\n')
         f.write('\tmodel->getMatterSubsystem().calcAccelerationIgnoringConstraints(*state,\n')
         f.write('\t\t\tappliedMobilityForces, appliedBodyForces, udot, A_GB);\n\n')
-        f.write('\tstd::cout << "udot after calcAccelerationIgnoringConstraints: " << udot.toString() << std::endl;')
         
         # Save dict pointing to which elements are returned by F and in which
         # order, such as to facilitate using F when formulating problem.
@@ -1147,12 +1146,12 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
         f.write('\tauto indicesSimbodyInOS = getIndicesSimbodyInOpenSim(*model);\n')  # TODO: uncomment this once it works
         f.write('\tfor (int i = 0; i < NU; ++i) res[0][i] =\n')
         f.write('\t\t\tvalue<T>(udot[indicesSimbodyInOS[i]]);\n')
-        F_map['accelerations'] = {}
+        F_map['genForces'] = {}
         count = 0
         for coordinate in coordinates:
             if 'beta' in coordinate:
                 continue
-            F_map['accelerations'][coordinate] = count 
+            F_map['genForces'][coordinate] = count 
             count += 1
         count_acc = nCoordinates
             
@@ -1181,69 +1180,61 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     # %% Build external Function.
     buildExternalFunction(outputFilename, outputDir, 3*nCoordinates)
         
-    # %% Torque verification test.
-    # Delete previous saved dummy motion if needed.
-    if os.path.exists(os.path.join(pathID, "dummyData.sto")):
-        os.remove(os.path.join(pathID, "dummyData.sto"))
+    # %% System's verification test.
+    # load and initialize the model
+    model = opensim.Model(pathOpenSimModel)
+    state = model.initSystem()
 
-    # Create a dummy motion for ID.
-    nCoordinatesAll = coordinateSet.getSize()
-    dummyDataa = np.zeros((10, nCoordinatesAll + 1))
-    for coor in range(nCoordinatesAll):
-        dummyDataa[:, coor + 1] = np.random.rand()*0.05
-    dummyDataa[:, 0] = np.linspace(0.01, 0.1, 10)
-    labelsDummy = []
-    labelsDummy.append("time")
-    for coor in range(nCoordinatesAll):
-        labelsDummy.append(coordinateSet.get(coor).getName())
-    numpy2storage(labelsDummy, dummyDataa, os.path.join(pathID,
-                                                        "dummyData.sto"))
+    # append generalized forces to the model (duplicates might be created if some coordinateActuators are present already!)
+    coordActDummy = opensim.CoordinateActuator()    # dummy coordinate actuator to access required function
+    optimalForce = 1                                # optimal force [N or N/m] for every new actuator
+    includeLockedAndConstr = True                   # actuators are created also for locked and constrained coordinates
+    coordActDummy.CreateForceSetOfCoordinateActuatorsForModel(state, 
+                                                              model, 
+                                                              optimalForce,
+                                                              includeLockedAndConstr)
+    
+    model.initSystem()
 
-    # Solve inverse dynamics.
-    pathGenericIDSetupFile = os.path.join(pathID, "SetupID.xml")
-    idTool = opensim.InverseDynamicsTool(pathGenericIDSetupFile)
-    idTool.setName("ID_withOsimAndIDTool")
-    idTool.setModelFileName(pathOpenSimModel)
-    idTool.setResultsDir(outputDir)
-    idTool.setCoordinatesFileName(os.path.join(pathID, "dummyData.sto"))
-    idTool.setOutputGenForceFileName("ID_withOsimAndIDTool.sto")       
-    pathSetupID = os.path.join(outputDir, "SetupID.xml")
-    idTool.printToXML(pathSetupID)
-    idTool.run()
+    # set all of the actuators in the force set to be overwritten
+    acts = model.getActuators()
+    acts_dowcansted = []
+    for index_act in range(acts.getSize()):
+        act = opensim.ScalarActuator.safeDownCast(acts.get(index_act))
+        act.overrideActuation(state, True)
+        acts_dowcansted.append(act)
+
+    # create dummy generalized forces to be applied to the model
+    nTests = 3
+    magnitudeGenForces = 10     # max magnitude of forces that will be applied (could be increased for "heavier" models)
+    genForcesDummy = magnitudeGenForces*np.random.random((model.getForceSet().getSize(), nTests))
+
+    # create dummy joint angles and velocities to set model state
+    magnitudePositionPerturbation = 1
+    magnitudeSpeedPerturbation = 1
+    positionsDummy = magnitudePositionPerturbation*np.random.random((model.getNumCoordinates(), nTests))
+    speedsDummy = magnitudeSpeedPerturbation*np.random.random((model.getNumCoordinates(), nTests))
+
+    # set the model in a random configuration, apply generalized forces, solve for accelerations and store them
+    accelerationsFD = np.zeros((model.getNumCoordinates(), nTests))
+    for test in range(nTests):
+        # set joint angles and speed
+        for index_coordinate in range(model.getNumCoordinates()):
+            model.getCoordinateSet().get(index_coordinate).setValue(state, positionsDummy[index_coordinate, test])
+            model.getCoordinateSet().get(index_coordinate).setSpeedValue(state, speedsDummy[index_coordinate, test])
+
+        # apply generalized forces
+        for index_act in range(acts.getSize()):
+            acts_dowcansted[index_act].setOverrideActuation(state, genForcesDummy[index_act, test])
+
+        # realize the model to acceleration stage (solve forward dynamics)
+        model.realizeAcceleration(state)
+
+        for index_coordinate in range(model.getNumCoordinates()):
+            accelerationsFD[index_coordinate, test] = model.getCoordinateSet().get(index_coordinate).getAccelerationValue(state)
     
-    # Extract torques from .osim + ID tool.    
-    headers = []    
-    for coord in range(nCoordinatesAll):                
-        if (coordinateSet.get(coord).getName() == "pelvis_tx" or 
-            coordinateSet.get(coord).getName() == "pelvis_ty" or 
-            coordinateSet.get(coord).getName() == "pelvis_tz" or
-            coordinateSet.get(coord).getName() == "knee_angle_r_beta" or 
-            coordinateSet.get(coord).getName() == "knee_angle_l_beta" or
-            coordinateSet.get(coord).getName() == "knee_angle_beta_r" or 
-            coordinateSet.get(coord).getName() == "knee_angle_beta_l"):
-            suffix_header = "_force"
-        else:
-            suffix_header = "_moment"
-        headers.append(coordinateSet.get(coord).getName() + suffix_header)
-        
-    from utilities import storage2df    
-    ID_osim_df = storage2df(os.path.join(outputDir,
-                                  "ID_withOsimAndIDTool.sto"), headers)
-    ID_osim = np.zeros((nCoordinates))
-    count = 0
-    for coordinate in coordinates:
-        if (coordinate == "pelvis_tx" or 
-            coordinate == "pelvis_ty" or 
-            coordinate == "pelvis_tz"):
-            suffix_header = "_force"
-        else:
-            suffix_header = "_moment"
-        if 'beta' in coordinate:
-            continue                
-        ID_osim[count] = ID_osim_df.iloc[0][coordinate + suffix_header]
-        count += 1
-    
-    # Extract torques from external function.
+
+    # Extract accelerations from external function.
     os_system = platform.system()
     if os_system == 'Windows':
         F = ca.external('F', os.path.join(outputDir, 
@@ -1254,31 +1245,16 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     elif os_system == 'Darwin':
         F = ca.external('F', os.path.join(outputDir, 
                                           outputFilename + '.dylib')) 
-    DefaultPos = storage2df(os.path.join(pathID,
-                                         "dummyData.sto"), coordinates)
-    vecInput = np.zeros((nCoordinates * 3, 1))    
-    coordinates_sel = []
-    for coord in coordinates:
-        if 'beta' in coord:
-            continue
-        coordinates_sel.append(coord)        
-    idxCoord4F = [coordinates_sel.index(coord) 
-                  for coord in list(F_map['residuals'].keys())]
-    for c, coor in enumerate(coordinates_sel):        
-        vecInput[idxCoord4F[c] * 2] = DefaultPos.iloc[0][coor]
-    ID_F = (F(vecInput)).full().flatten()[:nCoordinates]
     
-    # Verify torques from external match torques from .osim + ID tool.
-    # TODO: weird that check had to be relaxed
-    diff_ID = np.abs(ID_osim - ID_F)
-    for i in range(diff_ID.shape[0]):
-        if diff_ID[i] > 1e-6:            
-            diff_ID_perc = diff_ID[i]/np.abs(ID_osim[i])*100            
-            if diff_ID_perc > 0.1:
-                raise ValueError("Torque verification test failed")    
-    # assert(np.max(np.abs(ID_osim - ID_F)) < 1e-6), (
-    #     "Torque verification test failed")
-    print('Torque verification test passed')
+    accelerationsExtFunct = np.zeros((model.getNumCoordinates(), nTests))
+    for test in range(nTests):
+        accelerationsExtFunct[:,test] = F(np.concatenate((positionsDummy[:,test], speedsDummy[:,test], genForcesDummy[:,test])))
+    
+    # Verify accelerations from external function match accelerations from .osim model + CoordinateActuators
+    diff = np.abs(accelerationsExtFunct - accelerationsFD)
+    if np.min(diff) > 1e-14:         # leave some tolerance for machine precision?      
+        raise ValueError("Acceleration verification test failed")    
+    print('Acceleration verification test passed')
 
 # ---------------------------------------------------------------------------------------------------------------
 
