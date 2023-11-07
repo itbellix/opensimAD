@@ -587,6 +587,8 @@ def generateExternalFunction_ID(pathOpenSimModel, outputDir, pathID,
     print('Torque verification test passed')
 
 # %% Generate c-code with external function (and its Jacobian).
+# TODO: do we really need to do it? Is it possible to serialize it
+# instead to have all the information?
 def generateF(dim):
     import foo
     importlib.reload(foo)
@@ -726,6 +728,16 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     model = opensim.Model(pathOpenSimModel)
     model.initSystem()
     bodySet = model.getBodySet()
+
+    # perform initial checks. This pipeline assumes that the model comes without muscles, and without 
+    # reserve actuators. It would be possible to add them by modifying the code, do it carefully and
+    # check step by step if your code still makes sense.
+
+    assert model.getNumMuscleStates() == 0, "There must be no muscles"
+    assert model.getForceSet().getSize() == 0, "There must be no forces (muscles, coordinate actuators)" # this condition might be relaxed
+    # the second assert is probably too strong, as models with 1DoF and 1 reserve actuators work. The concern here is the way in which
+    # extra coordinate actuators are added to the other (un-actuated) coordinates, as if they are simply appended this could be a problem.
+    # In a nutshell, we might not know the order of the coordinate actuators in the model, hence the input torque could easily be wrong.
     
     nBodies = 0
     for i in range(bodySet.getSize()):        
@@ -1181,20 +1193,14 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     buildExternalFunction(outputFilename, outputDir, 3*nCoordinates)
         
     # %% System's verification test.
-    # load and initialize the model
-    model = opensim.Model(pathOpenSimModel)
-    state = model.initSystem()
+    # load and initialize the model (adding reserve actuators for each coordinate)
 
-    # append generalized forces to the model (duplicates might be created if some coordinateActuators are present already!)
-    coordActDummy = opensim.CoordinateActuator()    # dummy coordinate actuator to access required function
-    optimalForce = 1                                # optimal force [N or N/m] for every new actuator
-    includeLockedAndConstr = True                   # actuators are created also for locked and constrained coordinates
-    coordActDummy.CreateForceSetOfCoordinateActuatorsForModel(state, 
-                                                              model, 
-                                                              optimalForce,
-                                                              includeLockedAndConstr)
-    
-    model.initSystem()
+    modelProcessor = opensim.ModelProcessor(pathOpenSimModel)
+    optimalForce = 1
+    modelProcessor.append(opensim.ModOpAddReserves(optimalForce))
+    model = modelProcessor.process()
+
+    state = model.initSystem()
 
     # set all of the actuators in the force set to be overwritten
     acts = model.getActuators()
@@ -1248,7 +1254,9 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     
     accelerationsExtFunct = np.zeros((model.getNumCoordinates(), nTests))
     for test in range(nTests):
-        accelerationsExtFunct[:,test] = F(np.concatenate((positionsDummy[:,test], speedsDummy[:,test], genForcesDummy[:,test])))
+        # the external function takes alternation of qs and q_dots
+        state_vals = np.vstack((positionsDummy[:,test], speedsDummy[:,test])).T.reshape(-1)
+        accelerationsExtFunct[:,test, np.newaxis] = F(np.concatenate((state_vals, genForcesDummy[:,test])))
     
     # Verify accelerations from external function match accelerations from .osim model + CoordinateActuators
     diff = np.abs(accelerationsExtFunct - accelerationsFD)
