@@ -600,6 +600,9 @@ def generateF(dim):
     cg.add(F.jacobian())
     cg.generate()
 
+    # also save the function (preserves hessian too)
+    F.save('CustomFunction.casadi')
+
 # %% Build/compile external function.
 def buildExternalFunction(filename, CPP_DIR, nInputs):       
     
@@ -1148,24 +1151,15 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
         f.write('\tmodel->getMatterSubsystem().calcAccelerationIgnoringConstraints(*state,\n')
         f.write('\t\t\tappliedMobilityForces, appliedBodyForces, udot, A_GB);\n\n')
         
-        # Save dict pointing to which elements are returned by F and in which
-        # order, such as to facilitate using F when formulating problem.
-        F_map = {}
-        
         f.write('\t/// Outputs.\n')        
-        # Export induced accelerations.
+        # Define x_dot (as an alternation of coordinate speeds, from the input x, and accelerations, from the model)
+        f.write('\t/// Coordinate speeds (taken directly from inputs)\n')
+        f.write('\tfor (int i = 0; i < NU; ++i) res[0][2*i] =\n')
+        f.write('\t\t\tvalue<T>(QsUs[2*i+1]);\n\n')
         f.write('\t/// Induced accelerations (OpenSim and Simbody have different state orders).\n')
-        f.write('\tauto indicesSimbodyInOS = getIndicesSimbodyInOpenSim(*model);\n')  # TODO: uncomment this once it works
-        f.write('\tfor (int i = 0; i < NU; ++i) res[0][i] =\n')
+        f.write('\tauto indicesSimbodyInOS = getIndicesSimbodyInOpenSim(*model);\n')
+        f.write('\tfor (int i = 0; i < NU; ++i) res[0][2*i+1] =\n')
         f.write('\t\t\tvalue<T>(udot[indicesSimbodyInOS[i]]);\n')
-        F_map['genForces'] = {}
-        count = 0
-        for coordinate in coordinates:
-            if 'beta' in coordinate:
-                continue
-            F_map['genForces'][coordinate] = count 
-            count += 1
-        count_acc = nCoordinates
             
         f.write('\n')
         f.write('\treturn 0;\n')
@@ -1174,20 +1168,17 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
         f.write('int main() {\n')
         f.write('\tRecorder x[NX];\n')
         f.write('\tRecorder u[NU];\n')
-        f.write('\tRecorder x_dot[NU];\n')
+        f.write('\tRecorder x_dot[NX];\n')
         f.write('\tfor (int i = 0; i < NX; ++i) x[i] <<= 0;\n')
         f.write('\tfor (int i = 0; i < NU; ++i) u[i] <<= 0;\n')
         f.write('\tconst Recorder* Recorder_arg[n_in] = { x,u };\n')
         f.write('\tRecorder* Recorder_res[n_out] = { x_dot };\n')
         f.write('\tF_generic<Recorder>(Recorder_arg, Recorder_res);\n')
-        f.write('\tdouble res[NU];\n')
-        f.write('\tfor (int i = 0; i < NU; ++i) Recorder_res[0][i] >>= res[i];\n')
+        f.write('\tdouble res[NX];\n')
+        f.write('\tfor (int i = 0; i < NX; ++i) Recorder_res[0][i] >>= res[i];\n')
         f.write('\tRecorder::stop_recording();\n')
         f.write('\treturn 0;\n')
         f.write('}\n')
-        
-        # Save dict
-        np.save(pathOutputMap, F_map)
         
     # %% Build external Function.
     buildExternalFunction(outputFilename, outputDir, 3*nCoordinates)
@@ -1256,7 +1247,8 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     for test in range(nTests):
         # the external function takes alternation of qs and q_dots
         state_vals = np.vstack((positionsDummy[:,test], speedsDummy[:,test])).T.reshape(-1)
-        accelerationsExtFunct[:,test, np.newaxis] = F(np.concatenate((state_vals, genForcesDummy[:,test])))
+        xDotExternalFunction = F(np.concatenate((state_vals, genForcesDummy[:,test])))
+        accelerationsExtFunct[:,test, np.newaxis] = xDotExternalFunction[1::2]
     
     # Verify accelerations from external function match accelerations from .osim model + CoordinateActuators
     diff = np.abs(accelerationsExtFunct - accelerationsFD)
