@@ -586,22 +586,16 @@ def generateExternalFunction_ID(pathOpenSimModel, outputDir, pathID,
     #     "Torque verification test failed")
     print('Torque verification test passed')
 
-# %% Generate c-code with external function (and its Jacobian).
-# TODO: do we really need to do it? Is it possible to serialize it
-# instead to have all the information?
-def generateF(dim):
+# %% Save the resulting CasADi function to a file
+def saveF(dim, CPP_DIR, filename):
     import foo
     importlib.reload(foo)
-    cg = ca.CodeGenerator('foo_jac')
     arg = ca.SX.sym('arg', dim)
     y,_,_ = foo.foo(arg)
     F = ca.Function('F',[arg],[y])
-    cg.add(F)
-    cg.add(F.jacobian())
-    cg.generate()
 
-    # also save the function (preserves hessian too)
-    F.save('CustomFunction.casadi')
+    # Saving the function (preserves all the information)
+    F.save(os.path.join(CPP_DIR, filename + '.casadi'))
 
 # %% Build/compile external function.
 def buildExternalFunction(filename, CPP_DIR, nInputs):       
@@ -684,33 +678,8 @@ def buildExternalFunction(filename, CPP_DIR, nInputs):
     sys.path.append(pathBuildExternalFunction)
     os.chdir(pathBuildExternalFunction)
     
-    generateF(nInputs)
+    saveF(nInputs, CPP_DIR, filename)
     
-    if os_system == 'Windows':
-        cmd3 = 'cmake "' + pathBuildExternalFunction + '" -A x64 -DTARGET_NAME:STRING="' + filename + '" -DINSTALL_DIR:PATH="' + path_external_functions_filename_install + '"'
-        cmd4 = "cmake --build . --config RelWithDebInfo --target install"
-    elif os_system == 'Linux':
-        cmd3 = 'cmake "' + pathBuildExternalFunction + '" -DTARGET_NAME:STRING="' + filename + '" -DINSTALL_DIR:PATH="' + path_external_functions_filename_install + '"'
-        cmd4 = "make install"
-    elif os_system == 'Darwin':
-        cmd3 = 'cmake "' + pathBuildExternalFunction + '" -DTARGET_NAME:STRING="' + filename + '" -DINSTALL_DIR:PATH="' + path_external_functions_filename_install + '"'
-        cmd4 = "make install"
-    
-    os.chdir(path_external_functions_filename_build)
-    os.system(cmd3)
-    os.system(cmd4)    
-    os.chdir(pathMain)
-    
-    if os_system == 'Windows':
-        shutil.copy2(os.path.join(path_external_functions_filename_install, 'bin', filename + '.dll'), CPP_DIR)
-    elif os_system == 'Linux':
-        shutil.copy2(os.path.join(path_external_functions_filename_install, 'lib', 'lib' + filename + '.so'), CPP_DIR)
-        os.rename(os.path.join(CPP_DIR, 'lib' + filename + '.so'), os.path.join(CPP_DIR, filename + '.so'))
-    elif os_system == 'Darwin':
-        shutil.copy2(os.path.join(path_external_functions_filename_install, 'lib', 'lib' + filename + '.dylib'), CPP_DIR)
-        os.rename(os.path.join(CPP_DIR, 'lib' + filename + '.dylib'), os.path.join(CPP_DIR, filename + '.dylib'))
-    
-    os.remove(os.path.join(pathBuildExternalFunction, "foo_jac.c"))
     os.remove(os.path.join(pathBuildExternalFunction, fooName))
     os.remove(path_external_filename_foo)
     shutil.rmtree(pathBuild)
@@ -718,7 +687,7 @@ def buildExternalFunction(filename, CPP_DIR, nInputs):
     shutil.rmtree(path_external_functions_filename_build)    
 
 
-def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
+def generateExternalFunction_Acc(pathOpenSimModel, outputDir,
                              outputFilename='F'):
     
     # %% Paths.
@@ -738,6 +707,7 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
 
     assert model.getNumMuscleStates() == 0, "There must be no muscles"
     assert model.getForceSet().getSize() == 0, "There must be no forces (muscles, coordinate actuators)" # this condition might be relaxed
+    
     # the second assert is probably too strong, as models with 1DoF and 1 reserve actuators work. The concern here is the way in which
     # extra coordinate actuators are added to the other (un-actuated) coordinates, as if they are simply appended this could be a problem.
     # In a nutshell, we might not know the order of the coordinate actuators in the model, hence the input torque could easily be wrong.
@@ -746,8 +716,6 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     for i in range(bodySet.getSize()):        
         c_body = bodySet.get(i)
         c_body_name = c_body.getName()   
-        if (c_body_name == 'patella_l' or c_body_name == 'patella_r'):
-            continue
         nBodies += 1
     
     jointSet = model.get_JointSet()
@@ -758,24 +726,7 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     nCoordinates = coordinateSet.getSize()
     coordinates = []
     for coor in range(nCoordinates):
-        coordinates.append(coordinateSet.get(coor).getName())
-    sides = ['r', 'l']
-    for side in sides:
-        # We do not include the coordinates from the patellofemoral joints,
-        # since they only influence muscle paths, which we approximate using
-        # polynomials offline.
-        if 'knee_angle_{}_beta'.format(side) in coordinates:
-            nCoordinates -= 1
-            nJoints -= 1
-        elif 'knee_angle_beta_{}'.format(side) in coordinates:
-            nCoordinates -= 1
-            nJoints -= 1        
-    
-    nContacts = 0
-    for i in range(forceSet.getSize()):        
-        c_force_elt = forceSet.get(i)        
-        if c_force_elt.getConcreteClassName() == "SmoothSphereHalfSpaceForce":  
-            nContacts += 1
+        coordinates.append(coordinateSet.get(coor).getName())   
     
     with open(pathOutputFile, "w") as f:
         
@@ -833,9 +784,7 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
         f.write('\t// Definition of bodies.\n')
         for i in range(bodySet.getSize()):        
             c_body = bodySet.get(i)
-            c_body_name = c_body.getName()            
-            if (c_body_name == 'patella_l' or c_body_name == 'patella_r'):
-                continue            
+            c_body_name = c_body.getName()
             c_body_mass = c_body.get_mass()
             c_body_mass_center = c_body.get_mass_center().to_numpy()
             c_body_inertia = c_body.get_inertia()
@@ -859,9 +808,6 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
             c_joint_type = c_joint.getConcreteClassName()
             
             c_joint_name = c_joint.getName()
-            if (c_joint_name == 'patellofemoral_l' or 
-                c_joint_name == 'patellofemoral_r'):
-                continue
             
             parent_frame = c_joint.get_frames(0)
             parent_frame_name = parent_frame.getParentFrame().getName()
@@ -1139,9 +1085,7 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
                 count += 1
                 f.write('\n')
                 
-        #TODO: this is basically done by just using the void SimTK::SimbodyMatterSubsystem::calcAcceleration
-        # https://simtk.org/api_docs/simbody/3.5/classSimTK_1_1SimbodyMatterSubsystem.html#acaa2e2826c3aa20edd38ef295619f219
-        # Only thing to be built here is the appliedMobilityForces, that is basically representing the CoordinateActuator's action
+        # Calculate the induced accelerations (no constraints in the model will be accounted for)
         f.write('\t/// Calculate induced accelerations.\n')
         f.write('\tVector_<SpatialVec> A_GB;\n')
         f.write('\tA_GB.resize(nbodies);\n')
@@ -1232,16 +1176,7 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir, pathID,
     
 
     # Extract accelerations from external function.
-    os_system = platform.system()
-    if os_system == 'Windows':
-        F = ca.external('F', os.path.join(outputDir, 
-                                          outputFilename + '.dll'))
-    elif os_system == 'Linux':
-        F = ca.external('F', os.path.join(outputDir, 
-                                          outputFilename + '.so'))
-    elif os_system == 'Darwin':
-        F = ca.external('F', os.path.join(outputDir, 
-                                          outputFilename + '.dylib')) 
+    F = ca.Function.load(os.path.join('/home/itbellix/Desktop/GitHub/opensimAD_fork/buildExternalFunction', 'CustomFunction.casadi'))
     
     accelerationsExtFunct = np.zeros((model.getNumCoordinates(), nTests))
     for test in range(nTests):

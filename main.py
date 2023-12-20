@@ -61,7 +61,7 @@ outputFilename = modelName
 # generateExternalFunction_ID(pathOpenSimModel, pathModelFolder, pathID,
 #                          outputFilename=outputFilename)
 
-generateExternalFunction_Acc(pathOpenSimModel, pathModelFolder, pathID,
+generateExternalFunction_Acc(pathOpenSimModel, pathModelFolder,
                          outputFilename=outputFilename)
 # %% Example (not recommended).
 # You can also directly provide a cpp file and use the built-in utilities to
