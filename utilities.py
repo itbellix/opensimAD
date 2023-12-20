@@ -1176,7 +1176,7 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir,
     
 
     # Extract accelerations from external function.
-    F = ca.Function.load(os.path.join('/home/itbellix/Desktop/GitHub/opensimAD_fork/buildExternalFunction', 'CustomFunction.casadi'))
+    F = ca.Function.load(os.path.join(outputDir, outputFilename + '.casadi'))
     
     accelerationsExtFunct = np.zeros((model.getNumCoordinates(), nTests))
     for test in range(nTests):
@@ -1187,7 +1187,7 @@ def generateExternalFunction_Acc(pathOpenSimModel, outputDir,
     
     # Verify accelerations from external function match accelerations from .osim model + CoordinateActuators
     diff = np.abs(accelerationsExtFunct - accelerationsFD)
-    if np.min(diff) > 1e-14:         # leave some tolerance for machine precision?      
+    if np.min(diff) > 1e-6:         # leave some tolerance as in the original code
         raise ValueError("Acceleration verification test failed")    
     print('Acceleration verification test passed')
 
